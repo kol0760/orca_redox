@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ORCA 氧化还原电位计算原理与公式指南</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- MathJax for rendering LaTeX math formulas -->
+    <script src="https://polyfill.io/v3/polyfill.min.js?features=es6"></script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Fira+Code:wght@400;500&display=swap');
+        body { font-family: 'Inter', sans-serif; }
+        code, pre { font-family: 'Fira Code', monospace; }
+        .gradient-border {
+            background: linear-gradient(60deg, #3b82f6, #8b5cf6, #ec4899);
+        }
+    </style>
+</head>
+<body class="bg-slate-900 text-slate-100 min-h-screen py-10 px-4 sm:px-6 lg:px-8">
+
+    <div class="max-w-5xl mx-auto space-y-10">
+
+        <!-- Header -->
+        <div class="text-center space-y-4 pb-8 border-b border-slate-800">
+            <div class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-blue-500/10 border border-blue-500/30 text-blue-400 text-xs font-semibold uppercase tracking-wider">
+                <i data-lucide="zap" class="w-3.5 h-3.5"></i> Quantum Chemistry Workflow
+            </div>
+            <h1 class="text-3xl sm:text-4xl font-extrabold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-blue-400 via-indigo-300 to-purple-400">
+                ORCA 氧化还原电位计算原理与热力学公式
+            </h1>
+            <p class="text-slate-400 text-sm sm:text-base max-w-2xl mx-auto">
+                基于高精度热力学循环（Thermodynamic Cycle）与复合校正方案的电化学电位计算全流程解析
+            </p>
+        </div>
+
+        <!-- Section 1: Why 3 References -->
+        <div class="bg-slate-800/60 rounded-2xl p-6 sm:p-8 border border-slate-700/60 shadow-xl backdrop-blur-sm space-y-6">
+            <div class="flex items-center gap-3">
+                <div class="p-2.5 bg-indigo-500/10 rounded-xl border border-indigo-500/20 text-indigo-400">
+                    <i data-lucide="gauge" class="w-6 h-6"></i>
+                </div>
+                <div>
+                    <h2 class="text-xl font-bold text-slate-100">一、 为什么报表里会有 3 个 vs. 电位？</h2>
+                    <p class="text-slate-400 text-xs sm:text-sm">在电化学与实验化学中，没有绝对孤立的电压表，所有电位都必须相对于特定的参比电极。</p>
+                </div>
+            </div>
+
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-4 pt-2">
+                <!-- Card 1: SHE -->
+                <div class="bg-slate-900/80 rounded-xl p-5 border border-slate-700/50 flex flex-col justify-between hover:border-blue-500/40 transition">
+                    <div class="space-y-2">
+                        <span class="inline-block px-2.5 py-0.5 rounded text-xs font-semibold bg-blue-500/20 text-blue-300">国际理论基准</span>
+                        <h3 class="text-lg font-bold text-slate-200">vs. SHE (标准氢电极)</h3>
+                        <p class="text-slate-400 text-xs leading-relaxed">
+                            物理化学、量子化学、水系电化学统一基准。
+                        </p>
+                    </div>
+                    <div class="mt-4 pt-3 border-t border-slate-800 text-xs text-blue-400 font-mono">
+                        绝对参比电位: <span class="font-bold">4.281 V</span>
+                    </div>
+                </div>
+
+                <!-- Card 2: Li/Li+ -->
+                <div class="bg-slate-900/80 rounded-xl p-5 border border-slate-700/50 flex flex-col justify-between hover:border-emerald-500/40 transition">
+                    <div class="space-y-2">
+                        <span class="inline-block px-2.5 py-0.5 rounded text-xs font-semibold bg-emerald-500/20 text-emerald-300">电池/电解液专用</span>
+                        <h3 class="text-lg font-bold text-slate-200">vs. Li/Li⁺ (锂电极)</h3>
+                        <p class="text-slate-400 text-xs leading-relaxed">
+                            锂电池、高电压电解液溶剂氧化分解窗口专用。
+                        </p>
+                    </div>
+                    <div class="mt-4 pt-3 border-t border-slate-800 text-xs text-emerald-400 font-mono">
+                        绝对参比电位: <span class="font-bold">1.240 V</span> <span class="text-slate-500">(SHE + 3.041V)</span>
+                    </div>
+                </div>
+
+                <!-- Card 3: Fc/Fc+ -->
+                <div class="bg-slate-900/80 rounded-xl p-5 border border-slate-700/50 flex flex-col justify-between hover:border-amber-500/40 transition">
+                    <div class="space-y-2">
+                        <span class="inline-block px-2.5 py-0.5 rounded text-xs font-semibold bg-amber-500/20 text-amber-300">非水有机体系推荐</span>
+                        <h3 class="text-lg font-bold text-slate-200">vs. Fc/Fc⁺ (二茂铁)</h3>
+                        <p class="text-slate-400 text-xs leading-relaxed">
+                            IUPAC 推荐有机非水溶剂（乙腈、碳酸酯等）内标参比。
+                        </p>
+                    </div>
+                    <div class="mt-4 pt-3 border-t border-slate-800 text-xs text-amber-400 font-mono">
+                        绝对参比电位: <span class="font-bold">4.681 V</span> <span class="text-slate-500">(SHE - 0.400V)</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Section 2: 4 Steps Energy Extraction -->
+        <div class="bg-slate-800/60 rounded-2xl p-6 sm:p-8 border border-slate-700/60 shadow-xl space-y-6">
+            <div class="flex items-center gap-3">
+                <div class="p-2.5 bg-blue-500/10 rounded-xl border border-blue-500/20 text-blue-400">
+                    <i data-lucide="layers" class="w-6 h-6"></i>
+                </div>
+                <div>
+                    <h2 class="text-xl font-bold text-slate-100">二、 4 步分别提取的能量与物理量</h2>
+                    <p class="text-slate-400 text-xs sm:text-sm">每个状态（GN/OX/RD）均执行以下 4 步复合能量叠加计算：</p>
+                </div>
+            </div>
+
+            <div class="overflow-x-auto">
+                <table class="w-full text-left text-xs sm:text-sm text-slate-300 border-collapse">
+                    <thead>
+                        <tr class="bg-slate-900/80 text-slate-400 border-b border-slate-700 font-semibold">
+                            <th class="py-3 px-4">步骤</th>
+                            <th class="py-3 px-4">输出文件</th>
+                            <th class="py-3 px-4">理论级别</th>
+                            <th class="py-3 px-4">提取的物理量与符号</th>
+                            <th class="py-3 px-4">物理意义</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-slate-700/50">
+                        <tr class="hover:bg-slate-700/20 transition">
+                            <td class="py-3.5 px-4 font-mono font-bold text-blue-400">01</td>
+                            <td class="py-3.5 px-4 font-mono text-slate-300">01.out</td>
+                            <td class="py-3.5 px-4 text-xs font-mono text-slate-400">B3LYP CPCM (Opt+Freq)</td>
+                            <td class="py-3.5 px-4 font-bold text-amber-300">\( G_{\text{corr}} \) (自由能热校正)</td>
+                            <td class="py-3.5 px-4 text-slate-400 text-xs">含零点能 ZPE、平动、转动、振动热容与熵贡献 \(-TS\)</td>
+                        </tr>
+                        <tr class="hover:bg-slate-700/20 transition">
+                            <td class="py-3.5 px-4 font-mono font-bold text-purple-400">02</td>
+                            <td class="py-3.5 px-4 font-mono text-slate-300">02.out</td>
+                            <td class="py-3.5 px-4 text-xs font-mono text-slate-400">RI-B2PLYP (气相高精度单点)</td>
+                            <td class="py-3.5 px-4 font-bold text-purple-300">\( E_{\text{high}}^{\text{gas}} \) (高精度气相电子能)</td>
+                            <td class="py-3.5 px-4 text-slate-400 text-xs">用双杂化泛函+大基组提供最高精度的气相骨架电子能量</td>
+                        </tr>
+                        <tr class="hover:bg-slate-700/20 transition">
+                            <td class="py-3.5 px-4 font-mono font-bold text-emerald-400">03</td>
+                            <td class="py-3.5 px-4 font-mono text-slate-300">03.out</td>
+                            <td class="py-3.5 px-4 text-xs font-mono text-slate-400">M062X 6-31G(d) (气相单点)</td>
+                            <td class="py-3.5 px-4 font-bold text-emerald-300">\( E_{\text{low}}^{\text{gas}} \) (低级别气相能)</td>
+                            <td class="py-3.5 px-4 text-slate-400 text-xs">溶剂化自由能校正的“气相基准减数”</td>
+                        </tr>
+                        <tr class="hover:bg-slate-700/20 transition">
+                            <td class="py-3.5 px-4 font-mono font-bold text-rose-400">04</td>
+                            <td class="py-3.5 px-4 font-mono text-slate-300">04.out</td>
+                            <td class="py-3.5 px-4 text-xs font-mono text-slate-400">M062X 6-31G(d) CPCM (液相单点)</td>
+                            <td class="py-3.5 px-4 font-bold text-rose-300">\( E_{\text{low}}^{\text{solv}} \) (低级别液相能)</td>
+                            <td class="py-3.5 px-4 text-slate-400 text-xs">溶剂化自由能校正的“液相被减数”，与 03 步做差得到 \(\Delta G_{\text{solv}}\)</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Section 3: Thermodynamic Cycle Formula -->
+        <div class="bg-slate-800/60 rounded-2xl p-6 sm:p-8 border border-slate-700/60 shadow-xl space-y-6">
+            <div class="flex items-center gap-3">
+                <div class="p-2.5 bg-purple-500/10 rounded-xl border border-purple-500/20 text-purple-400">
+                    <i data-lucide="calculator" class="w-6 h-6"></i>
+                </div>
+                <div>
+                    <h2 class="text-xl font-bold text-slate-100">三、 热力学循环自由能合成公式</h2>
+                    <p class="text-slate-400 text-xs sm:text-sm">利用基组/泛函复合叠加校正（Composite Scheme）合成任意态的液相总吉布斯自由能：</p>
+                </div>
+            </div>
+
+            <!-- Math Card -->
+            <div class="bg-slate-900/90 rounded-xl p-6 border border-slate-700/70 text-center space-y-4">
+                <div class="text-lg sm:text-2xl font-mono text-indigo-300">
+                    \[ G_{\text{solv}} = E_{\text{high}}^{\text{gas}}(\text{02}) + G_{\text{corr}}(\text{01}) + \left[ E_{\text{low}}^{\text{solv}}(\text{04}) - E_{\text{low}}^{\text{gas}}(\text{03}) \right] \]
+                </div>
+                <div class="text-xs text-slate-400 max-w-xl mx-auto">
+                    其中：<span class="text-rose-400 font-semibold">\(\Delta G_{\text{solv}} = E_{\text{low}}^{\text{solv}}(\text{04}) - E_{\text{low}}^{\text{gas}}(\text{03})\)</span> 代表连续介质溶剂化自由能贡献项。
+                </div>
+            </div>
+        </div>
+
+        <!-- Section 4: Redox Potentials Calculations -->
+        <div class="bg-slate-800/60 rounded-2xl p-6 sm:p-8 border border-slate-700/60 shadow-xl space-y-6">
+            <div class="flex items-center gap-3">
+                <div class="p-2.5 bg-emerald-500/10 rounded-xl border border-emerald-500/20 text-emerald-400">
+                    <i data-lucide="activity" class="w-6 h-6"></i>
+                </div>
+                <div>
+                    <h2 class="text-xl font-bold text-slate-100">四、 氧化电位与还原电位计算步骤</h2>
+                    <p class="text-slate-400 text-xs sm:text-sm">单位换算基准：\( 1\text{ Hartree} = 27.211386\text{ eV} \)</p>
+                </div>
+            </div>
+
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+
+                <!-- Oxidation Box -->
+                <div class="bg-slate-900/80 rounded-xl p-6 border border-slate-700/60 space-y-4">
+                    <div class="flex items-center justify-between">
+                        <h3 class="text-lg font-bold text-blue-300 flex items-center gap-2">
+                            <i data-lucide="arrow-up-right" class="w-5 h-5"></i> 1. 氧化电位 \( E_{\text{ox}} \)
+                        </h3>
+                        <span class="text-xs px-2 py-1 rounded bg-blue-500/20 text-blue-300">失去 1 个电子</span>
+                    </div>
+                    <div class="text-xs text-slate-400 font-mono">
+                        反应方程式: \( \text{M} \to \text{M}^{+\bullet} + e^- \)
+                    </div>
+                    <div class="bg-slate-950 p-4 rounded-lg text-xs sm:text-sm font-mono space-y-2 border border-slate-800">
+                        <div class="text-slate-300">
+                            \[ \Delta G_{\text{ox}}\text{ (eV)} = \left[ G(\text{OX}) - G(\text{GN}) \right] \times 27.2114 \]
+                        </div>
+                        <div class="pt-2 border-t border-slate-800 space-y-1 text-slate-400 text-xs">
+                            <div>• <span class="text-blue-300 font-bold">vs. SHE</span>: \( E_{\text{ox}}^{\text{SHE}} = \Delta G_{\text{ox}}\text{ (eV)} - 4.281 \)</div>
+                            <div>• <span class="text-emerald-300 font-bold">vs. Li/Li⁺</span>: \( E_{\text{ox}}^{\text{Li}} = \Delta G_{\text{ox}}\text{ (eV)} - 1.240 \)</div>
+                            <div>• <span class="text-amber-300 font-bold">vs. Fc/Fc⁺</span>: \( E_{\text{ox}}^{\text{Fc}} = \Delta G_{\text{ox}}\text{ (eV)} - 4.681 \)</div>
+                        </div>
+                    </div>
+                    <p class="text-xs text-slate-500 italic">注：氧化电位越低，说明该分子越容易被氧化（供电子能力越强）。</p>
+                </div>
+
+                <!-- Reduction Box -->
+                <div class="bg-slate-900/80 rounded-xl p-6 border border-slate-700/60 space-y-4">
+                    <div class="flex items-center justify-between">
+                        <h3 class="text-lg font-bold text-purple-300 flex items-center gap-2">
+                            <i data-lucide="arrow-down-right" class="w-5 h-5"></i> 2. 还原电位 \( E_{\text{red}} \)
+                        </h3>
+                        <span class="text-xs px-2 py-1 rounded bg-purple-500/20 text-purple-300">得到 1 个电子</span>
+                    </div>
+                    <div class="text-xs text-slate-400 font-mono">
+                        反应方程式: \( \text{M} + e^- \to \text{M}^{-\bullet} \)
+                    </div>
+                    <div class="bg-slate-950 p-4 rounded-lg text-xs sm:text-sm font-mono space-y-2 border border-slate-800">
+                        <div class="text-slate-300">
+                            \[ \Delta G_{\text{red}}\text{ (eV)} = \left[ G(\text{GN}) - G(\text{RD}) \right] \times 27.2114 \]
+                        </div>
+                        <div class="pt-2 border-t border-slate-800 space-y-1 text-slate-400 text-xs">
+                            <div>• <span class="text-blue-300 font-bold">vs. SHE</span>: \( E_{\text{red}}^{\text{SHE}} = -\Delta G_{\text{red}}\text{ (eV)} - 4.281 \)</div>
+                            <div>• <span class="text-emerald-300 font-bold">vs. Li/Li⁺</span>: \( E_{\text{red}}^{\text{Li}} = -\Delta G_{\text{red}}\text{ (eV)} - 1.240 \)</div>
+                            <div>• <span class="text-amber-300 font-bold">vs. Fc/Fc⁺</span>: \( E_{\text{red}}^{\text{Fc}} = -\Delta G_{\text{red}}\text{ (eV)} - 4.681 \)</div>
+                        </div>
+                    </div>
+                    <p class="text-xs text-slate-500 italic">注：还原电位越高，说明该分子越容易被还原（得电子能力越强）。</p>
+                </div>
+
+            </div>
+        </div>
+
+        <!-- Footer -->
+        <div class="text-center text-xs text-slate-500 py-6 border-t border-slate-800">
+            ORCA Redox Potential Calculation Pipeline • Generated for Automated Quantum Chemistry Workflow
+        </div>
+
+    </div>
+
+    <script>
+        lucide.createIcons();
+    </script>
+</body>
+</html>
