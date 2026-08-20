@@ -161,8 +161,10 @@ def generate_slurm_script(
     else:
         lines.append(f"#SBATCH --ntasks-per-node={cores}")
     lines.append(f"#SBATCH --nodes={nodes}")
-    lines.append(f"#SBATCH --partition {partition}")
-    lines.append(f"#SBATCH -t {time_limit}")
+    if partition:
+        lines.append(f"#SBATCH --partition {partition}")
+    if time_limit:
+        lines.append(f"#SBATCH --time={time_limit}")
     lines.append("")
     lines.append("")
     lines.append("# 应用command的绝对路径")
@@ -640,7 +642,10 @@ def main():
     if sbatch_avail and not args.no_submit:
         print(f"[*] Submitting jobs via Slurm...")
         job_ids = submit_slurm_jobs(workdir, mol_name, only_ox=args.ox, only_rd=args.rd)
-        print(f"[✓] All jobs submitted successfully: {job_ids}")
+        if job_ids:
+            print(f"[✓] All jobs submitted successfully: {job_ids}")
+        else:
+            print(f"[✗] Job submission failed. Please check the Slurm error messages above.")
     else:
         if args.no_submit:
             print("[i] --no_submit flag specified. Slurm scripts ready for manual submission.")
