@@ -18,7 +18,8 @@ import shutil
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 
-IMAGINARY_FREQ_THRESHOLD = -50.0  # Frequencies >= -50.0 cm^-1 are considered safe / acceptable
+IMAG_IGNORE_THRESHOLD = -50.0    # Frequencies >= -50.0 cm^-1 are considered numerical noise, ignored
+IMAG_REFINE_THRESHOLD = -110.0   # -110.0 <= freq < -50.0: Moderate imag freq -> Use VeryTightOpt + FinalGrid5 on current geom
 MAX_REPAIR_ATTEMPTS = 3
 
 
@@ -175,9 +176,11 @@ def diagnose_failure(output_text: str) -> str:
         return "GEOM_OPT_MAXITER"
     if "VIBRATIONAL FREQUENCIES" in output_text:
         freqs = parse_vibrational_frequencies(output_text)
-        real_imag = [f for f in freqs if f < IMAGINARY_FREQ_THRESHOLD]
-        if real_imag:
-            return "IMAGINARY_FREQ"
+        min_freq = min(freqs) if freqs else 0.0
+        if min_freq < IMAG_REFINE_THRESHOLD:
+            return "SEVERE_IMAG"      # < -110 cm^-1: Real transition state -> mode perturbation
+        elif min_freq < IMAG_IGNORE_THRESHOLD:
+            return "MODERATE_IMAG"    # -110 <= freq < -50: Grid / loose threshold -> VeryTightOpt + FinalGrid5
     return "UNKNOWN_ERROR"
 
 
@@ -198,22 +201,30 @@ def create_repaired_inp_content(
         content = re.sub(r"(\*\s*xyzfile\s+[-+]?\d+\s+\d+\s+)\S+", rf"\1{new_xyz_name}", content)
 
     # 2. Extract and sanitize blocks
-    # Remove existing %GEOM and %SCF blocks to rebuild them cleanly
     content = re.sub(r"%GEOM\b.*?END", "", content, flags=re.DOTALL | re.IGNORECASE)
+    content = re.sub(r"%METHOD\b.*?END", "", content, flags=re.DOTALL | re.IGNORECASE)
+    content = re.sub(r"\b(SlowConv|PModel|VeryTightOpt|TightOpt)\b", "", content)
+    content = re.sub(r"%SCF\b.*?END", "", content, flags=re.DOTALL | re.IGNORECASE)
     
-    # Determine new %GEOM settings
-    if failure_type == "IMAGINARY_FREQ":
+    method_block = ""
+    
+    # Case A: Moderate Imaginary Frequency (-110 to -50 cm^-1) -> VeryTightOpt + FinalGrid5
+    if failure_type == "MODERATE_IMAG":
+        content = re.sub(r"(!\s*[^\n]+)", r"\1 VeryTightOpt", content, count=1)
+        geom_block = "%GEOM\n  MaxIter 512\n  Trust 0.05\nEND"
+        method_block = "%METHOD\n  FinalGrid 5\nEND\n"
+        
+    # Case B: Severe Imaginary Frequency (< -110 cm^-1) -> Mode perturbation restart
+    elif failure_type == "SEVERE_IMAG":
         geom_block = "%GEOM\n  MaxIter 512\n  Trust 0.15\nEND"
+        
+    # Case C: Geometry Optimization MaxIter Timeout
     elif failure_type == "GEOM_OPT_MAXITER":
         geom_block = "%GEOM\n  MaxIter 512\n  Trust 0.10\nEND"
     else:
         geom_block = "%GEOM\n  MaxIter 512\nEND"
 
-    # Determine new %SCF settings & keywords
-    # Remove old SlowConv / PModel from simple input line
-    content = re.sub(r"\b(SlowConv|PModel)\b", "", content)
-    content = re.sub(r"%SCF\b.*?END", "", content, flags=re.DOTALL | re.IGNORECASE)
-
+    # Determine %SCF settings
     if failure_type in ["SCF_CONV_FAIL", "UNKNOWN_ERROR"]:
         if attempt == 1:
             content = re.sub(r"(!\s*[^\n]+)", r"\1 SlowConv", content, count=1)
@@ -227,7 +238,7 @@ def create_repaired_inp_content(
         scf_block = "%SCF\n  MaxIter 512\nEND"
 
     # 3. Cleanly insert rebuilt blocks before the * xyzfile line
-    blocks_to_insert = f"\n{scf_block}\n{geom_block}\n"
+    blocks_to_insert = f"\n{scf_block}\n{geom_block}\n{method_block}"
     content = re.sub(r"(\*\s*xyzfile)", rf"{blocks_to_insert}\n\1", content)
     
     # Clean redundant blank lines
@@ -263,14 +274,14 @@ def run_step_with_isolated_retries(step: str, workdir: Path, cores: int, orca_cm
     has_serious_imag = False
     if is_normal and step == "01":
         freqs = parse_vibrational_frequencies(current_out_content)
-        serious_imag = [f for f in freqs if f < IMAGINARY_FREQ_THRESHOLD]
-        if serious_imag:
+        min_freq = min(freqs) if freqs else 0.0
+        if min_freq < IMAG_IGNORE_THRESHOLD:
             has_serious_imag = True
-            print(f"[!] Warning: Step 01 finished normally but has serious imaginary frequencies: {serious_imag} (< {IMAGINARY_FREQ_THRESHOLD} cm^-1)")
+            print(f"[!] Warning: Step 01 finished normally but has imaginary frequencies (< {IMAG_IGNORE_THRESHOLD} cm^-1): {min_freq:.2f} cm^-1")
         else:
             minor_imag = [f for f in freqs if f < 0.0]
             if minor_imag:
-                print(f"[i] Info: Minor imaginary frequencies ignored (>= {IMAGINARY_FREQ_THRESHOLD} cm^-1): {minor_imag}")
+                print(f"[i] Info: Minor imaginary frequencies ignored (>= {IMAG_IGNORE_THRESHOLD} cm^-1): {minor_imag}")
 
     if is_normal and not has_serious_imag:
         print(f"[✓] Step {step} converged successfully on initial attempt.")
@@ -280,7 +291,7 @@ def run_step_with_isolated_retries(step: str, workdir: Path, cores: int, orca_cm
     last_working_dir = workdir
     
     for attempt in range(1, MAX_REPAIR_ATTEMPTS + 1):
-        failure_type = "IMAGINARY_FREQ" if has_serious_imag else diagnose_failure(current_out_content)
+        failure_type = diagnose_failure(current_out_content)
         retry_dirname = f"retry_{attempt:02d}_{failure_type.lower()}"
         retry_dir = workdir / retry_dirname
         retry_dir.mkdir(parents=True, exist_ok=True)
@@ -291,14 +302,24 @@ def run_step_with_isolated_retries(step: str, workdir: Path, cores: int, orca_cm
         # Prepare coordinates & modified input
         new_xyz_name = None
         
-        if failure_type == "IMAGINARY_FREQ":
+        if failure_type == "MODERATE_IMAG":
+            # Moderate imaginary frequency (-110 <= freq < -50): Keep current 01.xyz, refine with VeryTightOpt + FinalGrid5
+            current_xyz = last_working_dir / f"{step}.xyz"
+            if not current_xyz.exists():
+                current_xyz = workdir / f"{step}.xyz"
+            if current_xyz.exists():
+                shutil.copy(current_xyz, retry_dir / f"{step}_refine.xyz")
+                new_xyz_name = f"{step}_refine.xyz"
+                print(f"  -> Re-optimizing directly from current geometry {new_xyz_name} using VeryTightOpt & FinalGrid5")
+                
+        elif failure_type == "SEVERE_IMAG":
+            # Severe imaginary frequency (freq < -110): Apply normal mode displacement perturbation
             mode_disp = parse_imaginary_normal_mode(current_out_content, mode_index=6)
             current_xyz = last_working_dir / f"{step}.xyz"
             if not current_xyz.exists():
                 current_xyz = workdir / f"{step}.xyz"
                 
             distorted_xyz = retry_dir / f"distorted_mode6_att{attempt}.xyz"
-            # Alternating sign strategy: attempt 1 -> +0.15, attempt 2 -> -0.15, attempt 3 -> +0.30
             displacement_factors = [0.15, -0.15, 0.30, -0.30]
             factor = displacement_factors[(attempt - 1) % len(displacement_factors)]
             
@@ -307,7 +328,6 @@ def run_step_with_isolated_retries(step: str, workdir: Path, cores: int, orca_cm
                 new_xyz_name = distorted_xyz.name
                 print(f"  -> Generated mode-distorted coordinate file: {new_xyz_name} (displacement factor: {factor:+.2f})")
             else:
-                # Fallback copy current
                 if current_xyz.exists():
                     shutil.copy(current_xyz, retry_dir / "start.xyz")
                     new_xyz_name = "start.xyz"
@@ -327,7 +347,6 @@ def run_step_with_isolated_retries(step: str, workdir: Path, cores: int, orca_cm
                     new_xyz_name = "start.xyz"
                     
         else: # SCF_CONV_FAIL or other
-            # Copy previous coordinate file
             for candidate in [last_working_dir / f"{step}.xyz", workdir / "mol.xyz", workdir / f"{step}.xyz"]:
                 if candidate.exists():
                     shutil.copy(candidate, retry_dir / candidate.name)
