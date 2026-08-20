@@ -187,55 +187,51 @@ def create_repaired_inp_content(
     attempt: int,
     new_xyz_name: Optional[str] = None
 ) -> str:
-    """Generate modified .inp content based on error diagnosis and attempt count."""
+    """
+    Generate clean, modified .inp content based on error diagnosis and attempt count.
+    Uses whole-block replacement to prevent repetitive nesting bugs.
+    """
     content = original_inp_text
     
-    # Update xyz coordinate reference if provided
+    # 1. Clean update xyz coordinate reference
     if new_xyz_name:
         content = re.sub(r"(\*\s*xyzfile\s+[-+]?\d+\s+\d+\s+)\S+", rf"\1{new_xyz_name}", content)
 
+    # 2. Extract and sanitize blocks
+    # Remove existing %GEOM and %SCF blocks to rebuild them cleanly
+    content = re.sub(r"%GEOM\b.*?END", "", content, flags=re.DOTALL | re.IGNORECASE)
+    
+    # Determine new %GEOM settings
     if failure_type == "IMAGINARY_FREQ":
-        # Ensure Freq and Opt are active with proper convergence thresholds
-        if "%GEOM" in content:
-            content = re.sub(r"%GEOM\s+", "%GEOM\n  MaxIter 512\n  Trust 0.15\n", content)
-        else:
-            content += "\n%GEOM\n  MaxIter 512\n  Trust 0.15\nEND\n"
-
+        geom_block = "%GEOM\n  MaxIter 512\n  Trust 0.15\nEND"
     elif failure_type == "GEOM_OPT_MAXITER":
-        # Increase MaxIter and adjust trust radius for smoother convergence
-        if "%GEOM" in content:
-            content = re.sub(r"%GEOM\s+", "%GEOM\n  MaxIter 1024\n  Trust 0.1\n", content)
-        else:
-            content += "\n%GEOM\n  MaxIter 1024\n  Trust 0.1\nEND\n"
+        geom_block = "%GEOM\n  MaxIter 512\n  Trust 0.10\nEND"
+    else:
+        geom_block = "%GEOM\n  MaxIter 512\nEND"
 
-    elif failure_type in ["SCF_CONV_FAIL", "UNKNOWN_ERROR"]:
-        # Tiered SCF Repair
+    # Determine new %SCF settings & keywords
+    # Remove old SlowConv / PModel from simple input line
+    content = re.sub(r"\b(SlowConv|PModel)\b", "", content)
+    content = re.sub(r"%SCF\b.*?END", "", content, flags=re.DOTALL | re.IGNORECASE)
+
+    if failure_type in ["SCF_CONV_FAIL", "UNKNOWN_ERROR"]:
         if attempt == 1:
-            # Attempt 1: Add SlowConv (damping + DIIS)
-            if "SlowConv" not in content:
-                content = re.sub(r"(!\s*[^\n]+)", r"\1 SlowConv", content, count=1)
-            if "%SCF" in content:
-                content = re.sub(r"%SCF\s+", "%SCF\n  MaxIter 1024\n  DAMP 0.7\n", content)
-            else:
-                content += "\n%SCF\n  MaxIter 1024\n  DAMP 0.7\nEND\n"
-
+            content = re.sub(r"(!\s*[^\n]+)", r"\1 SlowConv", content, count=1)
+            scf_block = "%SCF\n  MaxIter 512\n  DAMP 0.7\nEND"
         elif attempt == 2:
-            # Attempt 2: Strong 2nd-order SOSCF
-            content = re.sub(r"\bSlowConv\b", "", content)
-            if "%SCF" in content:
-                content = re.sub(r"%SCF\s+", "%SCF\n  SOSCF true\n  MaxIter 1024\n", content)
-            else:
-                content += "\n%SCF\n  SOSCF true\n  MaxIter 1024\nEND\n"
+            scf_block = "%SCF\n  SOSCF true\n  MaxIter 512\nEND"
+        else:
+            content = re.sub(r"(!\s*[^\n]+)", r"\1 PModel", content, count=1)
+            scf_block = "%SCF\n  Shift 0.2\n  DAMP 0.8\n  MaxIter 512\nEND"
+    else:
+        scf_block = "%SCF\n  MaxIter 512\nEND"
 
-        elif attempt >= 3:
-            # Attempt 3: Level shifting + PModel guess + damping
-            if "PModel" not in content:
-                content = re.sub(r"(!\s*[^\n]+)", r"\1 PModel", content, count=1)
-            if "%SCF" in content:
-                content = re.sub(r"%SCF\s+", "%SCF\n  Shift 0.2\n  DAMP 0.8\n  MaxIter 1024\n", content)
-            else:
-                content += "\n%SCF\n  Shift 0.2\n  DAMP 0.8\n  MaxIter 1024\nEND\n"
-
+    # 3. Cleanly insert rebuilt blocks before the * xyzfile line
+    blocks_to_insert = f"\n{scf_block}\n{geom_block}\n"
+    content = re.sub(r"(\*\s*xyzfile)", rf"{blocks_to_insert}\n\1", content)
+    
+    # Clean redundant blank lines
+    content = re.sub(r"\n{3,}", "\n\n", content).strip() + "\n"
     return content
 
 
@@ -302,10 +298,14 @@ def run_step_with_isolated_retries(step: str, workdir: Path, cores: int, orca_cm
                 current_xyz = workdir / f"{step}.xyz"
                 
             distorted_xyz = retry_dir / f"distorted_mode6_att{attempt}.xyz"
+            # Alternating sign strategy: attempt 1 -> +0.15, attempt 2 -> -0.15, attempt 3 -> +0.30
+            displacement_factors = [0.15, -0.15, 0.30, -0.30]
+            factor = displacement_factors[(attempt - 1) % len(displacement_factors)]
+            
             if mode_disp and current_xyz.exists():
-                apply_imaginary_mode_displacement(current_xyz, distorted_xyz, mode_disp, factor=0.15 * attempt)
+                apply_imaginary_mode_displacement(current_xyz, distorted_xyz, mode_disp, factor=factor)
                 new_xyz_name = distorted_xyz.name
-                print(f"  -> Generated mode-distorted coordinate file: {new_xyz_name}")
+                print(f"  -> Generated mode-distorted coordinate file: {new_xyz_name} (displacement factor: {factor:+.2f})")
             else:
                 # Fallback copy current
                 if current_xyz.exists():
