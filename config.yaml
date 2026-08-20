@@ -1,0 +1,49 @@
+# 计算资源与集群配置
+resources:
+  cores: 32               # 默认 CPU 核数 (%PAL nprocs)
+  nodes: 1                # 节点数 (--nodes=1)
+  memory_per_core_mb: 2000 # 每核内存配额 (%MaxCore)
+  slurm:
+    partition: "hpc"      # Slurm 分区名
+    time: "24:00:00"      # 最大运行时间限制
+    analysis_time: "00:30:00"
+    env_source: "source /fastone/softwares/hpc-kits/hpc-kits.sh"
+    orca_path: "/fastone/softwares/Orca/orca-6.1.0-f.0_linux_x86-64/bin/orca"
+
+# 溶剂模型配置 (CPCM)
+solvation:
+  epsilon: 18.5
+  refrac: 1.378
+
+# 各步骤的 ORCA 计算方法配置
+methods:
+  # 01: 溶剂化结构优化 + 频率分析 (Opt + Freq)
+  step01:
+    simple_input: "! B3LYP 6-311+G(d) D3BJ OPT FREQ CPCM def2/J RIJCOSX tightSCF noautostart miniprint"
+    scf_maxiter: 512
+    geom_maxiter: 512
+
+  # 02: 气相高精度单点能 (High-level Gas Single Point)
+  step02:
+    simple_input: "! RI-B2PLYP D3BJ ma-def2-TZVP AutoAux TightSCF"
+    scf_maxiter: 512
+
+  # 03: 气相基准单点能 (Low-level Gas Single Point)
+  step03:
+    simple_input: "! M062X D3Zero 6-31G(d) TightSCF DefGrid3"
+    scf_maxiter: 512
+
+  # 04: 液相基准单点能 (Low-level Solv Single Point)
+  step04:
+    simple_input: "! M062X D3Zero 6-31G(d) TightSCF DefGrid3 CPCM"
+    scf_maxiter: 512
+
+# 电位参考系配置 (单位: V)
+reference_electrodes:
+  SHE: 4.281              # 绝对标准氢电极电位 (V)
+  Li_Li_plus: 1.24        # 相对 SHE 的 Li/Li+ 绝对参比 (即 V_ref_Li = 4.281 - 3.041 = 1.24V)
+  Fc_Fc_plus: 4.681       # 二茂铁电位 (V)
+
+# 自适应纠错配置
+auto_fix:
+  max_attempts: 2         # 最大重试修复次数

@@ -1,0 +1,29 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.ipynb_checkpoints/
+*.egg-info/
+dist/
+build/
+
+# ORCA calculation scratch & output files
+*.tmp
+*.ges
+*.gbw
+*.densities
+*.densitiesinfo
+*.cpcm
+*.cpcm_corr
+*.engrad
+*.hess
+*.opt
+*.out
+*.bibtex
+slurm-*.out
+slurm-*.err
+
+# Molecule test directories
+mol_*/
+test_*/
