@@ -527,7 +527,22 @@ def main():
     
     # Analysis only mode
     if args.analysis:
-        workdir = Path(args.name) if args.name else Path.cwd()
+        if args.name:
+            candidate = Path(args.name)
+            # Case 1: candidate exists and contains GN/OX/RD
+            if candidate.exists() and ((candidate / "GN").exists() or (candidate / "OX").exists() or (candidate / "RD").exists()):
+                workdir = candidate
+            # Case 2: relative path from cwd
+            elif (Path.cwd() / args.name).exists() and ((Path.cwd() / args.name / "GN").exists() or (Path.cwd() / args.name / "OX").exists()):
+                workdir = Path.cwd() / args.name
+            # Case 3: already inside the molecular directory (cwd has GN/OX/RD or cwd.name matches args.name)
+            elif (Path.cwd() / "GN").exists() or (Path.cwd() / "OX").exists() or Path.cwd().name == args.name:
+                workdir = Path.cwd()
+            else:
+                workdir = candidate
+        else:
+            workdir = Path.cwd()
+
         if not workdir.exists():
             print(f"[Error] Target directory {workdir} does not exist for analysis.")
             sys.exit(1)
