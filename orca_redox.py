@@ -381,34 +381,59 @@ def parse_orca_output(state_dir: Path) -> Dict[str, Any]:
 
 
 def parse_orbitals_from_orca(output_text: str) -> Tuple[Optional[float], Optional[float], Optional[float]]:
-    """Parse HOMO, LUMO, and Gap (eV) from ORCA output."""
-    # Pattern for ORCA orbital energies table
-    # NO   OCC          E(Eh)            E(eV)
-    #  0   2.0000     -19.12345        -520.375
+    """Parse HOMO, LUMO, and Gap (eV) from ORCA output (supports both RKS and UKS)."""
     # Look for last ORBITAL ENERGIES block
-    orb_blocks = re.findall(r"ORBITAL ENERGIES\s*[-=]+(.*?)(?:--------|\*\*\*\*ORCA)", output_text, re.DOTALL)
+    orb_blocks = re.findall(r"ORBITAL ENERGIES\s*[-=]+(.*?)(?:--------|\*\*\*\*ORCA|TOTAL RUN TIME)", output_text, re.DOTALL)
     if not orb_blocks:
         return None, None, None
         
     block = orb_blocks[-1]
-    lines = block.strip().split("\n")
     
-    last_occ_ev = None
-    first_virt_ev = None
-    
-    for line in lines:
-        tokens = line.strip().split()
-        if len(tokens) >= 4:
-            try:
-                occ = float(tokens[1])
-                e_ev = float(tokens[3])
-                if occ > 0.5:
-                    last_occ_ev = e_ev
-                elif occ <= 0.5 and first_virt_ev is None:
-                    first_virt_ev = e_ev
-            except ValueError:
-                continue
-                
+    # Check if UKS (SPIN UP / SPIN DOWN)
+    if "SPIN UP ORBITALS" in block or "SPIN DOWN ORBITALS" in block:
+        # Separate spin channels
+        parts = re.split(r"SPIN (?:UP|DOWN) ORBITALS", block)
+        homo_candidates = []
+        lumo_candidates = []
+        for p in parts:
+            p_homo, p_lumo = None, None
+            for line in p.strip().split("\n"):
+                tokens = line.strip().split()
+                if len(tokens) >= 4:
+                    try:
+                        occ = float(tokens[1])
+                        e_ev = float(tokens[3])
+                        if occ > 0.1: # Occupied in spin channel
+                            p_homo = e_ev
+                        elif occ <= 0.1 and p_lumo is None:
+                            p_lumo = e_ev
+                    except ValueError:
+                        continue
+            if p_homo is not None:
+                homo_candidates.append(p_homo)
+            if p_lumo is not None:
+                lumo_candidates.append(p_lumo)
+        
+        last_occ_ev = max(homo_candidates) if homo_candidates else None
+        first_virt_ev = min(lumo_candidates) if lumo_candidates else None
+    else:
+        # Standard RKS
+        lines = block.strip().split("\n")
+        last_occ_ev = None
+        first_virt_ev = None
+        for line in lines:
+            tokens = line.strip().split()
+            if len(tokens) >= 4:
+                try:
+                    occ = float(tokens[1])
+                    e_ev = float(tokens[3])
+                    if occ > 0.5:
+                        last_occ_ev = e_ev
+                    elif occ <= 0.5 and first_virt_ev is None:
+                        first_virt_ev = e_ev
+                except ValueError:
+                    continue
+                    
     gap = (first_virt_ev - last_occ_ev) if (first_virt_ev is not None and last_occ_ev is not None) else None
     return last_occ_ev, first_virt_ev, gap
 
@@ -445,13 +470,17 @@ def calculate_redox_report(
         else:
             data["G_total_Eh"] = None
     
-    # Parse HOMO / LUMO from GN/01.out
+    # Parse HOMO / LUMO from GN outputs (checking 01.out, 02.out, 03.out, 04.out)
     homo_ev, lumo_ev, gap_ev = None, None, None
-    gn_01_out = workdir / "GN" / "01.out"
-    if gn_01_out.exists():
-        with open(gn_01_out, "r", encoding="utf-8", errors="ignore") as f:
-            c = f.read()
-        homo_ev, lumo_ev, gap_ev = parse_orbitals_from_orca(c)
+    for step_out in ["01.out", "02.out", "03.out", "04.out"]:
+        gn_out_file = workdir / "GN" / step_out
+        if gn_out_file.exists():
+            with open(gn_out_file, "r", encoding="utf-8", errors="ignore") as f:
+                c = f.read()
+            h, l, g = parse_orbitals_from_orca(c)
+            if h is not None and l is not None:
+                homo_ev, lumo_ev, gap_ev = h, l, g
+                break
     
     # Compute Potentials (Fixed 1.24 V reference)
     v_ref_she = cfg["reference_electrodes"].get("SHE", 4.281)
@@ -500,7 +529,7 @@ def calculate_redox_report(
 
 
 def display_and_save_summary(summary: Dict[str, Any], workdir: Path):
-    """Print formatted terminal table and save JSON and CSV reports."""
+    """Print formatted terminal table and save JSON, CSV, and HTML reports."""
     mol = summary["molecule"]
     print("\n" + "=" * 70)
     print(f"         ORCA REDOX POTENTIAL SUMMARY: {mol}")
@@ -558,10 +587,13 @@ def display_and_save_summary(summary: Dict[str, Any], workdir: Path):
         df.to_csv(csv_path, index=False)
         print(f"Saved CSV report to: {csv_path}")
 
-    # Generate Standalone Interactive HTML Report (3Dmol.js)
+    # Generate Specific Interactive HTML Report (e.g. FEC_addLi_redox_report.html and report.html)
     try:
         from html_reporter import generate_html_report
-        html_path = generate_html_report(summary, workdir, output_filename="report.html")
+        specific_html_name = f"{mol}_redox_report.html"
+        html_path = generate_html_report(summary, workdir, output_filename=specific_html_name)
+        # Also copy/generate report.html for convenience
+        generate_html_report(summary, workdir, output_filename="report.html")
         print(f"Saved Interactive HTML report to: {html_path}")
     except Exception as e:
         print(f"[Warning] Failed to generate HTML report: {e}")
