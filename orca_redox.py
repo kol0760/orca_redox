@@ -232,12 +232,41 @@ def generate_slurm_script(
         lines.append("")
         lines.append(f"python3 {Path(__file__).resolve()} -n {mol_name} --analysis")
         lines.append("exit 0")
+    elif state == "PREOPT":
+        lines.append(f'cd "${{SLURM_SUBMIT_DIR}}/PREOPT"')
+        lines.append("")
+        lines.append("# --- 气相粗糙预优化 (LooseOpt B3LYP/6-31G*) ---")
+        lines.append('echo "[*] Running gas-phase pre-optimization in PREOPT/..."')
+        lines.append('$orca_path 01.inp > 01.out 2>&1')
+        lines.append("if grep -q '\\*\\*\\*\\*ORCA TERMINATED NORMALLY\\*\\*\\*\\*' 01.out; then")
+        lines.append("    echo '[✓] Pre-optimization converged successfully.'")
+        lines.append("else")
+        lines.append("    echo '[!] Pre-optimization not fully converged. Downstream GN will fallback to trajectory/initial geometry.'")
+        lines.append("fi")
+        lines.append("exit 0")
     else:
+        state_dir = workdir / state
         lines.append(f'cd "${{SLURM_SUBMIT_DIR}}/{state}"')
         lines.append("")
         
-        # If OX or RD: Handle smart geometry inheritance with fallback
-        if state in ["OX", "RD"]:
+        # Geometry Inheritance logic for GN, OX, RD
+        if state == "GN":
+            lines.append("# --- GN 结构继承 (优先继承 PREOPT/01.xyz, 失败则回退) ---")
+            lines.append("if [ ! -f mol.xyz ]; then")
+            lines.append("    if [ -f ../PREOPT/01.xyz ] && grep -q '\\*\\*\\*\\*ORCA TERMINATED NORMALLY\\*\\*\\*\\*' ../PREOPT/01.out 2>/dev/null; then")
+            lines.append("        echo '[i] Inheriting pre-optimized geometry from PREOPT/01.xyz'")
+            lines.append("        cp ../PREOPT/01.xyz ./mol.xyz")
+            lines.append("    elif [ -f ../PREOPT/01_trj.xyz ]; then")
+            lines.append("        echo '[!] PREOPT did not terminate normally. Extracting last frame from PREOPT/01_trj.xyz'")
+            lines.append("        python3 -c 'from smart_optimizer import extract_last_geometry_from_trj, write_xyz_file; from pathlib import Path; atoms=extract_last_geometry_from_trj(Path(\"../PREOPT/01_trj.xyz\")); write_xyz_file(Path(\"mol.xyz\"), atoms) if atoms else None'")
+            lines.append("    fi")
+            lines.append(f"    if [ ! -f mol.xyz ] && [ -f ../{mol_name}.xyz ]; then")
+            lines.append(f"        echo '[i] Falling back to initial starting geometry'")
+            lines.append(f"        cp ../{mol_name}.xyz ./mol.xyz")
+            lines.append("    fi")
+            lines.append("fi")
+            lines.append("")
+        elif state in ["OX", "RD"]:
             lines.append("# --- 结构继承与回退策略 ---")
             lines.append("if [ ! -f mol.xyz ]; then")
             lines.append("    if [ -f ../GN/01.xyz ] && grep -q '\\*\\*\\*\\*ORCA TERMINATED NORMALLY\\*\\*\\*\\*' ../GN/01.out 2>/dev/null; then")
@@ -255,31 +284,6 @@ def generate_slurm_script(
             lines.append("")
         
         if not skip01:
-            lines.append("# --- Step 00: 气相粗糙预优化 (针对长链/大分子体系，带失败降级自救) ---")
-            lines.append("if [ -f 01_preopt.inp ]; then")
-            lines.append("    echo '[*] Executing gas-phase pre-optimization (LooseOpt B3LYP/6-31G*)...'")
-            lines.append('    $orca_path 01_preopt.inp > 01_preopt.out 2>&1')
-            lines.append("    if grep -q '\\*\\*\\*\\*ORCA TERMINATED NORMALLY\\*\\*\\*\\*' 01_preopt.out && [ -f 01_preopt.xyz ]; then")
-            lines.append("        echo '[✓] Pre-optimization converged. Passing 01_preopt.xyz into step 01'")
-            lines.append("        cp 01_preopt.xyz ./mol_preopt.xyz")
-            lines.append("        sed -i 's/mol.xyz/mol_preopt.xyz/g' 01.inp")
-            lines.append(f"        sed -i 's/{mol_name}.xyz/mol_preopt.xyz/g' 01.inp")
-            lines.append("    else")
-            lines.append("        echo '[!] Pre-optimization failed or timeout. Attempting trajectory last-frame fallback...'")
-            lines.append("        if [ -f 01_preopt_trj.xyz ]; then")
-            lines.append("            python3 -c 'from smart_optimizer import extract_last_geometry_from_trj, write_xyz_file; from pathlib import Path; atoms=extract_last_geometry_from_trj(Path(\"01_preopt_trj.xyz\")); write_xyz_file(Path(\"mol_preopt.xyz\"), atoms) if atoms else None'")
-            lines.append("            if [ -f mol_preopt.xyz ]; then")
-            lines.append("                echo '[i] Successfully extracted last frame from preopt trajectory.'")
-            lines.append("                sed -i 's/mol.xyz/mol_preopt.xyz/g' 01.inp")
-            lines.append(f"                sed -i 's/{mol_name}.xyz/mol_preopt.xyz/g' 01.inp")
-            lines.append("            fi")
-            lines.append("        else")
-            lines.append("            echo '[i] Falling back to original starting geometry for formal step 01.'")
-            lines.append("        fi")
-            lines.append("    fi")
-            lines.append("fi")
-            lines.append("")
-            
             lines.append("# Step 01: Opt + Freq (智能自救优化)")
             lines.append(f'python3 {smart_opt_path.resolve()} --step 01 --cores {cores} --orca_cmd "$orca_path"')
             lines.append("if [ $? -ne 0 ]; then")
@@ -564,14 +568,29 @@ def display_and_save_summary(summary: Dict[str, Any], workdir: Path):
 
 def submit_slurm_jobs(workdir: Path, mol_name: str, only_ox: bool = False, only_rd: bool = False) -> Dict[str, str]:
     """
-    Submit 4 Slurm jobs with robust dependency chain:
-    - OX & RD use 'afterany:JOB_GN' (with internal check for GN convergence or initial fallback)
-    - Analysis uses 'afterany:JOB_OX:JOB_RD' to guarantee partial result calculation
+    Submit Slurm jobs in sequence:
+    Optional: PREOPT -> GN (dep afterany:PREOPT) -> [OX, RD] (dep afterany:GN) -> Analysis (dep afterany:all)
     """
     job_ids = {}
     
-    # 1. Submit GN
-    res_gn = subprocess.run(["sbatch", "run_gn.slurm"], cwd=workdir, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    # 0. Submit PREOPT if present
+    job_preopt = None
+    if (workdir / "run_preopt.slurm").exists():
+        res_pre = subprocess.run(["sbatch", "run_preopt.slurm"], cwd=workdir, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        if res_pre.returncode == 0:
+            m_pre = re.search(r"Submitted batch job (\d+)", res_pre.stdout)
+            if m_pre:
+                job_preopt = m_pre.group(1)
+                job_ids["PREOPT"] = job_preopt
+                print(f"  [Slurm] Submitted Job 0 (PREOPT): Job ID {job_preopt}")
+                
+    # 1. Submit GN (Neutral state)
+    gn_cmd = ["sbatch"]
+    if job_preopt:
+        gn_cmd.append(f"--dependency=afterany:{job_preopt}")
+    gn_cmd.append("run_gn.slurm")
+    
+    res_gn = subprocess.run(gn_cmd, cwd=workdir, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     if res_gn.returncode != 0:
         print(f"[Error] Failed to submit run_gn.slurm: {res_gn.stderr}")
         return job_ids
@@ -582,9 +601,12 @@ def submit_slurm_jobs(workdir: Path, mol_name: str, only_ox: bool = False, only_
         return job_ids
     job_gn = m_gn.group(1)
     job_ids["GN"] = job_gn
-    print(f"  [Slurm] Submitted Job 1 (GN): Job ID {job_gn}")
+    if job_preopt:
+        print(f"  [Slurm] Submitted Job 1 (GN, dep afterany:{job_preopt}): Job ID {job_gn}")
+    else:
+        print(f"  [Slurm] Submitted Job 1 (GN): Job ID {job_gn}")
     
-    dep_for_analysis = []
+    dep_for_analysis = [job_gn]
     
     # 2. Submit OX (dependency: afterany:job_gn) -> If GN fails, OX falls back to initial coords
     if not only_rd and (workdir / "run_ox.slurm").exists():
@@ -748,7 +770,14 @@ def main():
     need_preopt = mol_complexity["need_preopt"]
     if need_preopt:
         print(f"[*] Detected large/flexible molecule (Heavy atoms: {mol_complexity['num_heavy_atoms']}, Rotatable bonds: {mol_complexity['num_rotatable_bonds']}).")
-        print(f"[*] Automatically enabled gas-phase pre-optimization step (01_preopt.inp: LooseOpt B3LYP/6-31G*).")
+        print(f"[*] Automatically enabled isolated gas-phase pre-optimization in PREOPT/ (LooseOpt B3LYP/6-31G*).")
+        
+        preopt_dir = workdir / "PREOPT"
+        preopt_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy(gn_xyz_path, preopt_dir / gn_xyz_path.name)
+        write_inp_file(preopt_dir / "01.inp", "preopt", charge_gn, mult_gn, gn_xyz_path.name, cfg, args.cores)
+        generate_slurm_script(workdir, "PREOPT", args.cores, cfg, mol_name=mol_name)
+        state_params["GN"]["start_xyz"] = "mol.xyz"
 
     # Create directories and input files
     for st in states_to_run:
@@ -757,10 +786,8 @@ def main():
         
         p = state_params[st]
         
-        if st == "GN":
+        if st == "GN" and not need_preopt:
             shutil.copy(gn_xyz_path, st_dir / p["start_xyz"])
-            if need_preopt:
-                write_inp_file(st_dir / "01_preopt.inp", "preopt", p["charge"], p["mult"], p["start_xyz"], cfg, args.cores)
             
         write_inp_file(st_dir / "01.inp", "01", p["charge"], p["mult"], p["start_xyz"], cfg, args.cores)
         for s in ["02", "03", "04"]:
@@ -772,7 +799,7 @@ def main():
     for st in states_to_run:
         generate_slurm_script(workdir, st, args.cores, cfg, skip01=args.skip01, mol_name=mol_name)
     generate_slurm_script(workdir, "Analysis", 1, cfg, is_analysis=True, mol_name=mol_name)
-    print(f"[*] Generated 4 Slurm scripts in {workdir}/")
+    print(f"[*] Generated Slurm scripts in {workdir}/")
     
     sbatch_avail = shutil.which("sbatch") is not None
     if sbatch_avail and not args.no_submit:
