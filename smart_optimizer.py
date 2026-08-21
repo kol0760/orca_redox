@@ -196,9 +196,13 @@ def create_repaired_inp_content(
     """
     content = original_inp_text
     
-    # 1. Clean update xyz coordinate reference
+    # 1. Clean update xyz coordinate reference using lambda to avoid \0 ASCII escape bug
     if new_xyz_name:
-        content = re.sub(r"(\*\s*xyzfile\s+[-+]?\d+\s+\d+\s+)\S+", rf"\1{new_xyz_name}", content)
+        content = re.sub(
+            r"(\*\s*xyzfile\s+[-+]?\d+\s+\d+\s+)\S+",
+            lambda m: m.group(1) + new_xyz_name,
+            content
+        )
 
     # 2. Extract and sanitize blocks
     content = re.sub(r"%GEOM\b.*?END", "", content, flags=re.DOTALL | re.IGNORECASE)
@@ -251,7 +255,7 @@ def create_repaired_inp_content(
 
     # 3. Cleanly insert rebuilt blocks before the * xyzfile line
     blocks_to_insert = f"\n{scf_block}\n{geom_block}\n{method_block}"
-    content = re.sub(r"(\*\s*xyzfile)", rf"{blocks_to_insert}\n\1", content)
+    content = re.sub(r"(\*\s*xyzfile)", lambda m: blocks_to_insert + "\n" + m.group(1), content)
     
     # Clean redundant blank lines
     content = re.sub(r"\n{3,}", "\n\n", content).strip() + "\n"
@@ -391,7 +395,7 @@ def run_step_with_isolated_retries(step: str, workdir: Path, cores: int, orca_cm
         has_serious_imag = False
         if is_normal and step == "01":
             freqs = parse_vibrational_frequencies(current_out_content)
-            serious_imag = [f for f in freqs if f < IMAGINARY_FREQ_THRESHOLD]
+            serious_imag = [f for f in freqs if f < IMAG_IGNORE_THRESHOLD]
             if serious_imag:
                 has_serious_imag = True
                 print(f"[!] Warning: Retry in {retry_dir.name} finished with imaginary frequencies: {serious_imag}")
