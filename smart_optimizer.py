@@ -243,9 +243,9 @@ def create_repaired_inp_content(
             geom_block = "%GEOM\n  MaxIter 512\n  Trust 0.03\nEND"
             method_block = "%METHOD\n  FinalGrid 5\nEND\n"
         
-    # Case B: Severe Imaginary Frequency (< -110 cm^-1) -> Mode perturbation restart
+    # Case B: Severe Imaginary Frequency (< -110 cm^-1) -> Mode perturbation restart with fresh initial Hessian
     elif failure_type == "SEVERE_IMAG":
-        geom_block = "%GEOM\n  MaxIter 512\n  Trust 0.15\nEND"
+        geom_block = "%GEOM\n  MaxIter 512\n  Trust 0.15\n  Calc_Hess true\nEND"
         
     # Case C: Geometry Optimization MaxIter Timeout
     elif failure_type == "GEOM_OPT_MAXITER":
@@ -349,7 +349,8 @@ def run_step_with_isolated_retries(step: str, workdir: Path, cores: int, orca_cm
                 current_xyz = workdir / f"{step}.xyz"
                 
             distorted_xyz = retry_dir / f"distorted_mode6_att{attempt}.xyz"
-            displacement_factors = [0.15, -0.15, 0.30, -0.30]
+            # Escalated displacement amplitude: +0.20, -0.25, +0.40 to thoroughly escape deep saddle points
+            displacement_factors = [0.20, -0.25, 0.40, -0.40]
             factor = displacement_factors[(attempt - 1) % len(displacement_factors)]
             
             if mode_disp and current_xyz.exists():
