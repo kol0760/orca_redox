@@ -470,17 +470,13 @@ def calculate_redox_report(
         else:
             data["G_total_Eh"] = None
     
-    # Parse HOMO / LUMO from GN outputs (checking 01.out, 02.out, 03.out, 04.out)
+    # Parse HOMO / LUMO strictly from GN/01.out (fallback to None / N/A if missing)
     homo_ev, lumo_ev, gap_ev = None, None, None
-    for step_out in ["01.out", "02.out", "03.out", "04.out"]:
-        gn_out_file = workdir / "GN" / step_out
-        if gn_out_file.exists():
-            with open(gn_out_file, "r", encoding="utf-8", errors="ignore") as f:
-                c = f.read()
-            h, l, g = parse_orbitals_from_orca(c)
-            if h is not None and l is not None:
-                homo_ev, lumo_ev, gap_ev = h, l, g
-                break
+    gn_01_out = workdir / "GN" / "01.out"
+    if gn_01_out.exists():
+        with open(gn_01_out, "r", encoding="utf-8", errors="ignore") as f:
+            c = f.read()
+        homo_ev, lumo_ev, gap_ev = parse_orbitals_from_orca(c)
     
     # Compute Potentials (Fixed 1.24 V reference)
     v_ref_she = cfg["reference_electrodes"].get("SHE", 4.281)

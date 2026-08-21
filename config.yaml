@@ -19,7 +19,7 @@ solvation:
 methods:
   # 01: 溶剂化结构优化 + 频率分析 (Opt + Freq)
   step01:
-    simple_input: "! B3LYP 6-311+G(d) D3BJ OPT FREQ CPCM def2/J RIJCOSX tightSCF noautostart miniprint"
+    simple_input: "! B3LYP 6-311+G(d) D3BJ OPT FREQ CPCM def2/J RIJCOSX tightSCF noautostart"
     scf_maxiter: 512
     geom_maxiter: 512
 
