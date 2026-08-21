@@ -11,6 +11,15 @@ from pathlib import Path
 from typing import Dict, Any, Optional
 
 
+def _fmt(val: Any, decimals: int = 6) -> str:
+    if val is None or val == "N/A":
+        return "N/A"
+    try:
+        return f"{float(val):.{decimals}f}"
+    except (ValueError, TypeError):
+        return str(val)
+
+
 def generate_html_report(
     summary: Dict[str, Any],
     workdir: Path,
@@ -23,15 +32,13 @@ def generate_html_report(
     for st in ["GN", "OX", "RD"]:
         xyz_file = workdir / st / "01.xyz"
         if not xyz_file.exists():
-            # Try finding any xyz in state dir
             candidates = list((workdir / st).glob("*.xyz")) if (workdir / st).exists() else []
             if candidates:
                 xyz_file = candidates[0]
         
-        if xyz_file.exists():
+        if xyz_file and xyz_file.exists():
             with open(xyz_file, "r", encoding="utf-8", errors="ignore") as f:
                 raw_xyz = f.read().strip()
-                # Clean and escape for JS template literal
                 xyz_data[st] = raw_xyz.replace("\\", "\\\\").replace("`", "\\`").replace("$", "\\$")
         else:
             xyz_data[st] = ""
@@ -52,10 +59,34 @@ def generate_html_report(
     lumo_str = f"{lumo_ev:.4f} eV" if lumo_ev is not None else "N/A"
     gap_str = f"{gap_ev:.4f} eV" if gap_ev is not None else "N/A"
 
+    # Extract state energy table values cleanly
+    st_dict = summary.get("states", {})
+    gn_data = st_dict.get("GN", {})
+    ox_data = st_dict.get("OX", {})
+    rd_data = st_dict.get("RD", {})
+
+    gn_gcorr = _fmt(gn_data.get("G_corr"))
+    gn_e02 = _fmt(gn_data.get("E_02"))
+    gn_e03 = _fmt(gn_data.get("E_03"))
+    gn_e04 = _fmt(gn_data.get("E_04"))
+    gn_gtot = _fmt(gn_data.get("G_total_Eh"))
+
+    ox_gcorr = _fmt(ox_data.get("G_corr"))
+    ox_e02 = _fmt(ox_data.get("E_02"))
+    ox_e03 = _fmt(ox_data.get("E_03"))
+    ox_e04 = _fmt(ox_data.get("E_04"))
+    ox_gtot = _fmt(ox_data.get("G_total_Eh"))
+
+    rd_gcorr = _fmt(rd_data.get("G_corr"))
+    rd_e02 = _fmt(rd_data.get("E_02"))
+    rd_e03 = _fmt(rd_data.get("E_03"))
+    rd_e04 = _fmt(rd_data.get("E_04"))
+    rd_gtot = _fmt(rd_data.get("G_total_Eh"))
+
     # Build Javascript xyzData map
     js_xyz_entries = []
     for st in ["GN", "OX", "RD"]:
-        if xyz_data[st]:
+        if xyz_data.get(st):
             js_xyz_entries.append(f'    "{st}": `{xyz_data[st]}`')
     js_xyz_data_str = "{\n" + ",\n".join(js_xyz_entries) + "\n};"
 
@@ -432,27 +463,27 @@ tr:hover td {{ background: var(--primary-pale); }}
         </tr>
         <tr>
             <td><b>中性态 (GN)</b></td>
-            <td>{summary['states'].get('GN', {{}}).get('G_corr', 'N/A')}</td>
-            <td>{summary['states'].get('GN', {{}}).get('E_02', 'N/A')}</td>
-            <td>{summary['states'].get('GN', {{}}).get('E_03', 'N/A')}</td>
-            <td>{summary['states'].get('GN', {{}}).get('E_04', 'N/A')}</td>
-            <td><b>{summary['states'].get('GN', {{}}).get('G_total_Eh', 'N/A')}</b></td>
+            <td>{gn_gcorr}</td>
+            <td>{gn_e02}</td>
+            <td>{gn_e03}</td>
+            <td>{gn_e04}</td>
+            <td><b>{gn_gtot}</b></td>
         </tr>
         <tr>
             <td><b>氧化态 (OX)</b></td>
-            <td>{summary['states'].get('OX', {{}}).get('G_corr', 'N/A')}</td>
-            <td>{summary['states'].get('OX', {{}}).get('E_02', 'N/A')}</td>
-            <td>{summary['states'].get('OX', {{}}).get('E_03', 'N/A')}</td>
-            <td>{summary['states'].get('OX', {{}}).get('E_04', 'N/A')}</td>
-            <td><b>{summary['states'].get('OX', {{}}).get('G_total_Eh', 'N/A')}</b></td>
+            <td>{ox_gcorr}</td>
+            <td>{ox_e02}</td>
+            <td>{ox_e03}</td>
+            <td>{ox_e04}</td>
+            <td><b>{ox_gtot}</b></td>
         </tr>
         <tr>
             <td><b>还原态 (RD)</b></td>
-            <td>{summary['states'].get('RD', {{}}).get('G_corr', 'N/A')}</td>
-            <td>{summary['states'].get('RD', {{}}).get('E_02', 'N/A')}</td>
-            <td>{summary['states'].get('RD', {{}}).get('E_03', 'N/A')}</td>
-            <td>{summary['states'].get('RD', {{}}).get('E_04', 'N/A')}</td>
-            <td><b>{summary['states'].get('RD', {{}}).get('G_total_Eh', 'N/A')}</b></td>
+            <td>{rd_gcorr}</td>
+            <td>{rd_e02}</td>
+            <td>{rd_e03}</td>
+            <td>{rd_e04}</td>
+            <td><b>{rd_gtot}</b></td>
         </tr>
     </table>
 </div>
