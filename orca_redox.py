@@ -58,6 +58,41 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> Dict[str, Any]:
         return yaml.safe_load(f)
 
 
+def analyze_molecule_complexity(input_path_or_smiles: str) -> Dict[str, Any]:
+    """Analyze molecular size and flexibility to determine if gas pre-opt is needed."""
+    info = {"num_heavy_atoms": 0, "num_rotatable_bonds": 0, "need_preopt": False}
+    if Chem is None:
+        return info
+        
+    mol = None
+    if os.path.isfile(input_path_or_smiles) or input_path_or_smiles.endswith(".xyz"):
+        # Count atoms from xyz file
+        try:
+            with open(input_path_or_smiles, "r", encoding="utf-8", errors="ignore") as f:
+                lines = f.readlines()
+            if len(lines) >= 3:
+                heavy_count = sum(1 for l in lines[2:] if l.strip() and not l.strip().split()[0].upper().startswith("H"))
+                info["num_heavy_atoms"] = heavy_count
+                if heavy_count >= 15:
+                    info["need_preopt"] = True
+        except Exception:
+            pass
+        return info
+    else:
+        # SMILES
+        try:
+            mol = Chem.MolFromSmiles(input_path_or_smiles)
+            if mol:
+                from rdkit.Chem import Lipinski
+                info["num_heavy_atoms"] = mol.GetNumHeavyAtoms()
+                info["num_rotatable_bonds"] = Lipinski.NumRotatableBonds(mol)
+                if info["num_heavy_atoms"] >= 15 or info["num_rotatable_bonds"] >= 4:
+                    info["need_preopt"] = True
+        except Exception:
+            pass
+    return info
+
+
 def smiles_to_xyz(smiles: str, output_xyz: Path, name: str = "mol") -> bool:
     """Generate 3D conformer from SMILES using RDKit."""
     if Chem is None or AllChem is None:
@@ -100,7 +135,23 @@ def write_inp_file(
     cfg: Dict[str, Any],
     cores: int
 ):
-    """Write ORCA .inp file for step 01, 02, 03, or 04."""
+    """Write ORCA .inp file for step 01, 02, 03, or 04, or preopt."""
+    if step_num == "preopt":
+        lines = [
+            "! B3LYP 6-31G(d) D3BJ LooseOpt def2/J RIJCOSX tightSCF noautostart miniprint",
+            "",
+            f"%PAL nprocs {cores} END",
+            "",
+            "%SCF MaxIter 512 END",
+            "%GEOM MaxIter 512 END",
+            "",
+            f"* xyzfile {charge} {mult} {xyz_filename}",
+            ""
+        ]
+        with open(filepath, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines))
+        return
+
     step_key = f"step{step_num}"
     step_cfg = cfg["methods"][step_key]
     simple_inp = step_cfg["simple_input"]
@@ -204,6 +255,31 @@ def generate_slurm_script(
             lines.append("")
         
         if not skip01:
+            lines.append("# --- Step 00: 气相粗糙预优化 (针对长链/大分子体系，带失败降级自救) ---")
+            lines.append("if [ -f 01_preopt.inp ]; then")
+            lines.append("    echo '[*] Executing gas-phase pre-optimization (LooseOpt B3LYP/6-31G*)...'")
+            lines.append('    $orca_path 01_preopt.inp > 01_preopt.out 2>&1')
+            lines.append("    if grep -q '\\*\\*\\*\\*ORCA TERMINATED NORMALLY\\*\\*\\*\\*' 01_preopt.out && [ -f 01_preopt.xyz ]; then")
+            lines.append("        echo '[✓] Pre-optimization converged. Passing 01_preopt.xyz into step 01'")
+            lines.append("        cp 01_preopt.xyz ./mol_preopt.xyz")
+            lines.append("        sed -i 's/mol.xyz/mol_preopt.xyz/g' 01.inp")
+            lines.append(f"        sed -i 's/{mol_name}.xyz/mol_preopt.xyz/g' 01.inp")
+            lines.append("    else")
+            lines.append("        echo '[!] Pre-optimization failed or timeout. Attempting trajectory last-frame fallback...'")
+            lines.append("        if [ -f 01_preopt_trj.xyz ]; then")
+            lines.append("            python3 -c 'from smart_optimizer import extract_last_geometry_from_trj, write_xyz_file; from pathlib import Path; atoms=extract_last_geometry_from_trj(Path(\"01_preopt_trj.xyz\")); write_xyz_file(Path(\"mol_preopt.xyz\"), atoms) if atoms else None'")
+            lines.append("            if [ -f mol_preopt.xyz ]; then")
+            lines.append("                echo '[i] Successfully extracted last frame from preopt trajectory.'")
+            lines.append("                sed -i 's/mol.xyz/mol_preopt.xyz/g' 01.inp")
+            lines.append(f"                sed -i 's/{mol_name}.xyz/mol_preopt.xyz/g' 01.inp")
+            lines.append("            fi")
+            lines.append("        else")
+            lines.append("            echo '[i] Falling back to original starting geometry for formal step 01.'")
+            lines.append("        fi")
+            lines.append("    fi")
+            lines.append("fi")
+            lines.append("")
+            
             lines.append("# Step 01: Opt + Freq (智能自救优化)")
             lines.append(f'python3 {smart_opt_path.resolve()} --step 01 --cores {cores} --orca_cmd "$orca_path"')
             lines.append("if [ $? -ne 0 ]; then")
@@ -300,6 +376,39 @@ def parse_orca_output(state_dir: Path) -> Dict[str, Any]:
     return results
 
 
+def parse_orbitals_from_orca(output_text: str) -> Tuple[Optional[float], Optional[float], Optional[float]]:
+    """Parse HOMO, LUMO, and Gap (eV) from ORCA output."""
+    # Pattern for ORCA orbital energies table
+    # NO   OCC          E(Eh)            E(eV)
+    #  0   2.0000     -19.12345        -520.375
+    # Look for last ORBITAL ENERGIES block
+    orb_blocks = re.findall(r"ORBITAL ENERGIES\s*[-=]+(.*?)(?:--------|\*\*\*\*ORCA)", output_text, re.DOTALL)
+    if not orb_blocks:
+        return None, None, None
+        
+    block = orb_blocks[-1]
+    lines = block.strip().split("\n")
+    
+    last_occ_ev = None
+    first_virt_ev = None
+    
+    for line in lines:
+        tokens = line.strip().split()
+        if len(tokens) >= 4:
+            try:
+                occ = float(tokens[1])
+                e_ev = float(tokens[3])
+                if occ > 0.5:
+                    last_occ_ev = e_ev
+                elif occ <= 0.5 and first_virt_ev is None:
+                    first_virt_ev = e_ev
+            except ValueError:
+                continue
+                
+    gap = (first_virt_ev - last_occ_ev) if (first_virt_ev is not None and last_occ_ev is not None) else None
+    return last_occ_ev, first_virt_ev, gap
+
+
 def calculate_redox_report(
     workdir: Path,
     cfg: Dict[str, Any],
@@ -332,7 +441,15 @@ def calculate_redox_report(
         else:
             data["G_total_Eh"] = None
     
-    # Compute Potentials
+    # Parse HOMO / LUMO from GN/01.out
+    homo_ev, lumo_ev, gap_ev = None, None, None
+    gn_01_out = workdir / "GN" / "01.out"
+    if gn_01_out.exists():
+        with open(gn_01_out, "r", encoding="utf-8", errors="ignore") as f:
+            c = f.read()
+        homo_ev, lumo_ev, gap_ev = parse_orbitals_from_orca(c)
+    
+    # Compute Potentials (Fixed 1.24 V reference)
     v_ref_she = cfg["reference_electrodes"].get("SHE", 4.281)
     v_ref_li = cfg["reference_electrodes"].get("Li_Li_plus", 1.24)
     v_ref_fc = cfg["reference_electrodes"].get("Fc_Fc_plus", 4.681)
@@ -340,6 +457,9 @@ def calculate_redox_report(
     summary = {
         "molecule": workdir.name,
         "states": state_results,
+        "HOMO_eV": homo_ev,
+        "LUMO_eV": lumo_ev,
+        "Gap_eV": gap_ev,
         "E_ox_SHE_V": None,
         "E_ox_Li_V": None,
         "E_ox_Fc_V": None,
@@ -419,12 +539,11 @@ def display_and_save_summary(summary: Dict[str, Any], workdir: Path):
     if pd is not None:
         row = {
             "Molecule": mol,
-            "E_ox_vs_SHE (V)": summary["E_ox_SHE_V"],
             "E_ox_vs_Li (V)": summary["E_ox_Li_V"],
-            "E_ox_vs_Fc (V)": summary["E_ox_Fc_V"],
-            "E_red_vs_SHE (V)": summary["E_red_SHE_V"],
             "E_red_vs_Li (V)": summary["E_red_Li_V"],
-            "E_red_vs_Fc (V)": summary["E_red_Fc_V"],
+            "HOMO (eV)": summary.get("HOMO_eV"),
+            "LUMO (eV)": summary.get("LUMO_eV"),
+            "Gap (eV)": summary.get("Gap_eV"),
             "GN_G_total (Eh)": summary["states"].get("GN", {}).get("G_total_Eh"),
             "OX_G_total (Eh)": summary["states"].get("OX", {}).get("G_total_Eh"),
             "RD_G_total (Eh)": summary["states"].get("RD", {}).get("G_total_Eh"),
@@ -433,6 +552,14 @@ def display_and_save_summary(summary: Dict[str, Any], workdir: Path):
         csv_path = workdir / "redox_summary.csv"
         df.to_csv(csv_path, index=False)
         print(f"Saved CSV report to: {csv_path}")
+
+    # Generate Standalone Interactive HTML Report (3Dmol.js)
+    try:
+        from html_reporter import generate_html_report
+        html_path = generate_html_report(summary, workdir, output_filename="report.html")
+        print(f"Saved Interactive HTML report to: {html_path}")
+    except Exception as e:
+        print(f"[Warning] Failed to generate HTML report: {e}")
 
 
 def submit_slurm_jobs(workdir: Path, mol_name: str, only_ox: bool = False, only_rd: bool = False) -> Dict[str, str]:
@@ -616,6 +743,13 @@ def main():
         shutil.copy(args.rd_xyz, rd_dir / "mol.xyz")
         state_params["RD"]["start_xyz"] = "mol.xyz"
 
+    # Analyze molecular complexity for automatic gas-phase pre-optimization
+    mol_complexity = analyze_molecule_complexity(input_str)
+    need_preopt = mol_complexity["need_preopt"]
+    if need_preopt:
+        print(f"[*] Detected large/flexible molecule (Heavy atoms: {mol_complexity['num_heavy_atoms']}, Rotatable bonds: {mol_complexity['num_rotatable_bonds']}).")
+        print(f"[*] Automatically enabled gas-phase pre-optimization step (01_preopt.inp: LooseOpt B3LYP/6-31G*).")
+
     # Create directories and input files
     for st in states_to_run:
         st_dir = workdir / st
@@ -625,6 +759,8 @@ def main():
         
         if st == "GN":
             shutil.copy(gn_xyz_path, st_dir / p["start_xyz"])
+            if need_preopt:
+                write_inp_file(st_dir / "01_preopt.inp", "preopt", p["charge"], p["mult"], p["start_xyz"], cfg, args.cores)
             
         write_inp_file(st_dir / "01.inp", "01", p["charge"], p["mult"], p["start_xyz"], cfg, args.cores)
         for s in ["02", "03", "04"]:
