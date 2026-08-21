@@ -59,58 +59,49 @@ def parse_imaginary_normal_mode(output_text: str, mode_index: int = 6) -> Option
     
     section = mode_section_m.group(1)
     lines = section.split("\n")
-    displacements = {}
-    current_col_modes = []
-    current_atom_idx = None
     
-    i = 0
+    # In ORCA NORMAL MODES:
+    # Row index i = 3*atom_idx + 0 (x)
+    # Row index i = 3*atom_idx + 1 (y)
+    # Row index i = 3*atom_idx + 2 (z)
+    mode_values = {}  # {row_idx: val}
+    current_col_modes = []
     target_col = -1
-    while i < len(lines):
-        line = lines[i].strip()
-        tokens = line.split()
+    
+    for line in lines:
+        tokens = line.strip().split()
         if not tokens:
-            i += 1
             continue
             
-        # Check if header line with mode indices (e.g. 6 7 8 9 10 11)
         if all(t.isdigit() for t in tokens):
             current_col_modes = [int(t) for t in tokens]
             if mode_index in current_col_modes:
                 target_col = current_col_modes.index(mode_index)
             else:
                 target_col = -1
-            current_atom_idx = None
-            i += 1
             continue
             
         if target_col != -1:
-            # Case 1: First line of an atom, e.g. ["0", "C", "x", "0.123", "0.000", ...]
-            if tokens[0].isdigit() and len(tokens) >= (len(current_col_modes) + 3):
+            if tokens[0].isdigit() and len(tokens) >= (len(current_col_modes) + 1):
                 try:
-                    current_atom_idx = int(tokens[0])
-                    if current_atom_idx not in displacements:
-                        displacements[current_atom_idx] = []
-                    val = float(tokens[3 + target_col])
-                    displacements[current_atom_idx].append(val)
-                except (ValueError, IndexError):
-                    pass
-            # Case 2: y or z line, e.g. ["y", "-0.654", "0.000", ...] or ["z", ...]
-            elif tokens[0] in ["y", "z"] and current_atom_idx is not None and len(tokens) >= (len(current_col_modes) + 1):
-                try:
+                    row_idx = int(tokens[0])
                     val = float(tokens[1 + target_col])
-                    displacements[current_atom_idx].append(val)
+                    mode_values[row_idx] = val
                 except (ValueError, IndexError):
                     pass
-        i += 1
+                
+    if not mode_values:
+        return None
         
+    num_coords = max(mode_values.keys()) + 1
+    num_atoms = num_coords // 3
     res = []
-    for atom_idx in sorted(displacements.keys()):
-        coords = displacements[atom_idx]
-        if len(coords) >= 3:
-            res.append((coords[0], coords[1], coords[2]))
-        else:
-            res.append((0.0, 0.0, 0.0))
-            
+    for atom_idx in range(num_atoms):
+        dx = mode_values.get(3 * atom_idx + 0, 0.0)
+        dy = mode_values.get(3 * atom_idx + 1, 0.0)
+        dz = mode_values.get(3 * atom_idx + 2, 0.0)
+        res.append((dx, dy, dz))
+        
     return res if res else None
 
 
