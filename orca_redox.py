@@ -201,12 +201,12 @@ def generate_slurm_script(
     env_source = slurm_cfg.get("env_source", "source /fastone/softwares/hpc-kits/hpc-kits.sh")
     orca_path = slurm_cfg.get("orca_path", "/fastone/softwares/Orca/orca-6.1.0-f.0_linux_x86-64/bin/orca")
     nodes = cfg["resources"].get("nodes", 1)
-    
     script_path = workdir / f"run_{state.lower()}.slurm"
     smart_opt_path = Path(__file__).parent / "smart_optimizer.py"
     
+    job_name = f"{mol_name}_{state}" if mol_name else f"ORCA_{state}"
     lines = ["#!/bin/bash"]
-    lines.append(f"#SBATCH -J ORCA_{state}")
+    lines.append(f"#SBATCH -J {job_name}")
     if is_analysis:
         lines.append("#SBATCH --ntasks-per-node=1")
     else:
