@@ -340,8 +340,8 @@ def run_step_with_isolated_retries(step: str, workdir: Path, cores: int, orca_cm
                 current_xyz = workdir / f"{step}.xyz"
                 
             distorted_xyz = retry_dir / f"distorted_mode6_att{attempt}.xyz"
-            # Escalated displacement amplitude: +0.20, -0.25, +0.40 to thoroughly escape deep saddle points
-            displacement_factors = [0.20, -0.25, 0.40, -0.40]
+            # 3x scaled displacement amplitude: +0.60, -0.75, +1.20 to enforce strong geometric deformation
+            displacement_factors = [0.60, -0.75, 1.20, -1.20]
             factor = displacement_factors[(attempt - 1) % len(displacement_factors)]
             
             if mode_disp and current_xyz.exists():
