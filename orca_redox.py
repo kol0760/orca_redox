@@ -501,7 +501,9 @@ def calculate_redox_report(
     
     gn_g = state_results.get("GN", {}).get("G_total_Eh")
     
-    # Oxidation Potential: Delta_G_ox = G(OX) - G(GN)
+    # Oxidation: Molecule -> Molecule(+) + e-
+    # Delta_G_ox = G(OX) - G(GN)
+    # E_ox = (G(OX) - G(GN)) * 27.2114 - V_ref
     if "OX" in state_results and state_results["OX"].get("G_total_Eh") is not None:
         if gn_g is not None:
             delta_g_ox_eh = state_results["OX"]["G_total_Eh"] - gn_g
@@ -511,10 +513,12 @@ def calculate_redox_report(
             summary["E_ox_Li_V"] = delta_g_ox_ev - v_ref_li
             summary["E_ox_Fc_V"] = delta_g_ox_ev - v_ref_fc
 
-    # Reduction Potential: Delta_G_red = G(GN) - G(RD)
+    # Reduction: Molecule + e- -> Molecule(-)
+    # Delta_G_red = G(RD) - G(GN)
+    # E_red = - (G(RD) - G(GN)) * 27.2114 - V_ref
     if "RD" in state_results and state_results["RD"].get("G_total_Eh") is not None:
         if gn_g is not None:
-            delta_g_red_eh = gn_g - state_results["RD"]["G_total_Eh"]
+            delta_g_red_eh = state_results["RD"]["G_total_Eh"] - gn_g
             delta_g_red_ev = delta_g_red_eh * HARTREE_TO_EV
             summary["Delta_G_red_eV"] = delta_g_red_ev
             summary["E_red_SHE_V"] = -delta_g_red_ev - v_ref_she
