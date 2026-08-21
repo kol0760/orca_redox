@@ -52,7 +52,7 @@ def parse_vibrational_frequencies(output_text: str) -> List[float]:
 
 
 def parse_imaginary_normal_mode(output_text: str, mode_index: int = 6) -> Optional[List[Tuple[float, float, float]]]:
-    """Extract normal mode displacement vectors for an imaginary mode."""
+    """Extract normal mode displacement vectors for an imaginary mode from ORCA output."""
     mode_section_m = re.search(r"NORMAL MODES\s*[-=]+(.*?)(?:IR SPECTRUM|RAMAN SPECTRUM|THERMOCHEMISTRY|\*\*\*\*ORCA)", output_text, re.DOTALL)
     if not mode_section_m:
         return None
@@ -61,33 +61,46 @@ def parse_imaginary_normal_mode(output_text: str, mode_index: int = 6) -> Option
     lines = section.split("\n")
     displacements = {}
     current_col_modes = []
+    current_atom_idx = None
     
     i = 0
     target_col = -1
     while i < len(lines):
-        line = lines[i]
-        tokens = line.strip().split()
-        if tokens and all(t.isdigit() for t in tokens):
+        line = lines[i].strip()
+        tokens = line.split()
+        if not tokens:
+            i += 1
+            continue
+            
+        # Check if header line with mode indices (e.g. 6 7 8 9 10 11)
+        if all(t.isdigit() for t in tokens):
             current_col_modes = [int(t) for t in tokens]
             if mode_index in current_col_modes:
                 target_col = current_col_modes.index(mode_index)
             else:
                 target_col = -1
+            current_atom_idx = None
             i += 1
             continue
             
-        if target_col != -1 and len(tokens) >= (len(current_col_modes) + 1):
-            val_str = tokens[-(len(current_col_modes) - target_col)]
-            try:
-                val = float(val_str)
-                atom_match = re.search(r"\d+", tokens[0])
-                if atom_match:
-                    atom_idx = int(atom_match.group())
-                    if atom_idx not in displacements:
-                        displacements[atom_idx] = []
-                    displacements[atom_idx].append(val)
-            except (ValueError, IndexError, AttributeError):
-                pass
+        if target_col != -1:
+            # Case 1: First line of an atom, e.g. ["0", "C", "x", "0.123", "0.000", ...]
+            if tokens[0].isdigit() and len(tokens) >= (len(current_col_modes) + 3):
+                try:
+                    current_atom_idx = int(tokens[0])
+                    if current_atom_idx not in displacements:
+                        displacements[current_atom_idx] = []
+                    val = float(tokens[3 + target_col])
+                    displacements[current_atom_idx].append(val)
+                except (ValueError, IndexError):
+                    pass
+            # Case 2: y or z line, e.g. ["y", "-0.654", "0.000", ...] or ["z", ...]
+            elif tokens[0] in ["y", "z"] and current_atom_idx is not None and len(tokens) >= (len(current_col_modes) + 1):
+                try:
+                    val = float(tokens[1 + target_col])
+                    displacements[current_atom_idx].append(val)
+                except (ValueError, IndexError):
+                    pass
         i += 1
         
     res = []
