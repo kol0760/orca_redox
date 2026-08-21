@@ -515,22 +515,23 @@ def display_and_save_summary(summary: Dict[str, Any], workdir: Path):
         print(f"      Imag Freqs: {im_freq}")
     
     print("-" * 70)
-    if summary["E_ox_SHE_V"] is not None:
-        print(f"  [Oxidation Potential (E_ox)]")
-        print(f"    vs. SHE   : {summary['E_ox_SHE_V']:8.3f} V")
-        print(f"    vs. Li/Li+: {summary['E_ox_Li_V']:8.3f} V")
-        print(f"    vs. Fc/Fc+: {summary['E_ox_Fc_V']:8.3f} V")
+    # Electronic structure
+    homo = f"{summary['HOMO_eV']:.4f} eV" if summary.get("HOMO_eV") is not None else "N/A"
+    lumo = f"{summary['LUMO_eV']:.4f} eV" if summary.get("LUMO_eV") is not None else "N/A"
+    gap = f"{summary['Gap_eV']:.4f} eV" if summary.get("Gap_eV") is not None else "N/A"
+    print(f"  [Frontier Orbitals (GN)]  HOMO: {homo}  |  LUMO: {lumo}  |  Gap: {gap}")
+    print("-" * 70)
+    
+    # Potential results (Fixed 1.24 V reference)
+    if summary["E_ox_Li_V"] is not None:
+        print(f"  [Oxidation Potential]  E_ox  = {summary['E_ox_Li_V']:8.4f} V (ref: 1.240 V)")
     else:
-        print("  [Oxidation Potential (E_ox)]: Not available (GN or OX state calculation incomplete)")
+        print("  [Oxidation Potential]  E_ox  : Not available (GN or OX state incomplete)")
         
-    print("")
-    if summary["E_red_SHE_V"] is not None:
-        print(f"  [Reduction Potential (E_red)]")
-        print(f"    vs. SHE   : {summary['E_red_SHE_V']:8.3f} V")
-        print(f"    vs. Li/Li+: {summary['E_red_Li_V']:8.3f} V")
-        print(f"    vs. Fc/Fc+: {summary['E_red_Fc_V']:8.3f} V")
+    if summary["E_red_Li_V"] is not None:
+        print(f"  [Reduction Potential]  E_red = {summary['E_red_Li_V']:8.4f} V (ref: 1.240 V)")
     else:
-        print("  [Reduction Potential (E_red)]: Not available (GN or RD state calculation incomplete)")
+        print("  [Reduction Potential]  E_red : Not available (GN or RD state incomplete)")
     print("=" * 70 + "\n")
     
     # Save JSON
